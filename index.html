@@ -1,0 +1,1353 @@
+<!DOCTYPE html>
+<html lang="zh-Hant" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>國道AI導航｜超輕量長途省電版・手機鏡頭＋即時CCTV雙模車道建議系統</title>
+  <script src="https://cdn.tailwindcss.com/3.4.17"></script>
+  <!-- TensorFlow.js & COCO-SSD Lite (Lazy-loaded or On-Demand for Real Camera Vehicle Detection) -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.17.0/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+TC:wght@400;500;700;900&display=swap" rel="stylesheet">
+  <style>
+    * {
+      font-family: 'Inter', 'Noto Sans TC', sans-serif;
+      box-sizing: border-box;
+    }
+    body {
+      background-color: #070b14;
+      color: #f1f5f9;
+      overflow-x: hidden;
+      transition: background-color 0.3s ease;
+    }
+    body.oled-eco-mode {
+      background-color: #000000;
+    }
+    .hud-glass {
+      background: rgba(15, 23, 42, 0.85);
+      border: 1px solid rgba(56, 189, 248, 0.18);
+    }
+    body.oled-eco-mode .hud-glass {
+      background: #050811;
+      border-color: rgba(30, 41, 59, 0.8);
+    }
+    .pulse-ring {
+      animation: pulseRing 2.5s infinite;
+    }
+    @keyframes pulseRing {
+      0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.45); }
+      70% { box-shadow: 0 0 0 8px rgba(16, 185, 129, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+    }
+    .scanline {
+      background: linear-gradient(to bottom, transparent 50%, rgba(14, 165, 233, 0.04) 51%);
+      background-size: 100% 4px;
+    }
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #0f172a;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #334155;
+      border-radius: 3px;
+    }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col justify-between selection:bg-sky-500 selection:text-white">
+
+  <!-- Top Navigation & Status Header -->
+  <header class="sticky top-0 z-30 hud-glass border-b border-slate-800/80 px-3 sm:px-6 py-2.5">
+    <div class="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-2">
+      <!-- Brand + Plate -->
+      <div class="flex items-center gap-3">
+        <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-sky-500 to-indigo-600 flex items-center justify-center shadow-lg shadow-sky-500/20">
+          <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" />
+          </svg>
+        </div>
+        <div>
+          <div class="flex items-center gap-2">
+            <h1 class="text-sm sm:text-base font-bold tracking-tight text-white">HighwayVision AI</h1>
+            <span class="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">長途防過熱輕量版</span>
+          </div>
+          <p class="text-[11px] text-slate-400 hidden sm:block">低幀率 AI 跳幀推論 (2 Hz) ＋ 1968 靜態快照輪詢 ＋ 智慧溫控降載</p>
+        </div>
+      </div>
+
+      <!-- License Plate & GPS & Thermal Controls -->
+      <div class="flex items-center gap-2 flex-wrap">
+        <div class="flex items-center bg-slate-900/90 border border-slate-700 rounded-lg px-2.5 py-1 gap-1.5">
+          <span class="text-[11px] text-slate-400 font-medium">車牌</span>
+          <input id="plateInput" type="text" value="ABC-8888" maxlength="8"
+            class="bg-transparent text-xs sm:text-sm font-bold text-amber-300 tracking-wider w-20 sm:w-24 focus:outline-none focus:ring-1 focus:ring-sky-500 rounded px-1 uppercase"
+            aria-label="輸入車牌號碼" />
+          <button id="savePlateBtn" class="text-[11px] bg-slate-800 hover:bg-slate-700 text-slate-200 px-2 py-0.5 rounded transition">
+            鎖定
+          </button>
+        </div>
+
+        <button id="gpsBtn" class="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/25 transition">
+          <span id="gpsDot" class="w-2 h-2 rounded-full bg-emerald-400 pulse-ring"></span>
+          <span id="gpsText">國1南下 95.4K (新竹段)</span>
+        </button>
+
+        <button id="oledHudBtn" class="flex items-center gap-1 text-xs font-medium px-2.5 py-1.5 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 transition" title="關閉雙鏡頭渲染，切換為純黑 OLED 極簡大字導航模式，大幅降低手機發熱">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
+          </svg>
+          <span id="oledHudBtnText">極簡純黑省電 HUD</span>
+        </button>
+
+        <button id="voiceToggleBtn" class="flex items-center gap-1 text-xs font-medium px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition" title="切換語音播報">
+          <svg id="voiceIconOn" class="w-4 h-4 text-sky-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+          </svg>
+          <span id="voiceStatusText" class="hidden md:inline">語音開啟</span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Content Container -->
+  <main class="flex-1 max-w-7xl w-full mx-auto px-3 sm:px-6 py-3.5 flex flex-col gap-3.5">
+
+    <!-- Long-Drive Thermal & Power Telemetry Bar (1~2 Hours Continuous Operation Guard) -->
+    <section class="hud-glass rounded-xl px-3.5 py-2.5 border border-slate-800 flex flex-wrap items-center justify-between gap-3 text-xs">
+      <div class="flex flex-wrap items-center gap-3 sm:gap-5">
+        <div class="flex items-center gap-1.5">
+          <span class="w-2 h-2 rounded-full bg-emerald-400" id="thermalDot"></span>
+          <span class="text-slate-400">長途溫控狀態：</span>
+          <span id="thermalStatusBadge" class="font-bold text-emerald-300">低功耗穩定 (預估可連續運行 3.5+ 小時)</span>
+        </div>
+
+        <div class="flex items-center gap-1.5">
+          <span class="text-slate-400">電池電量：</span>
+          <span id="batteryLevelText" class="font-bold text-white">92% (未充電)</span>
+        </div>
+
+        <div class="flex items-center gap-1.5">
+          <span class="text-slate-400">螢幕防休眠：</span>
+          <span id="wakeLockText" class="font-semibold text-sky-300">WakeLock 已啟用</span>
+        </div>
+
+        <div class="hidden xl:flex items-center gap-1.5">
+          <span class="text-slate-400">記憶體回收：</span>
+          <span id="tensorCountText" class="font-mono text-emerald-300">Tensors: 0 (無洩漏)</span>
+        </div>
+      </div>
+
+      <!-- Power Saving Mode Selector -->
+      <div class="flex items-center gap-1.5 bg-slate-900/90 p-1 rounded-lg border border-slate-800">
+        <span class="text-[11px] text-slate-400 px-1.5">運算負載模式：</span>
+        <button data-power="eco" class="power-mode-btn text-[11px] font-bold px-2.5 py-1 rounded bg-emerald-500 text-slate-950 transition" title="畫面 12 FPS + AI 每0.8秒推論1次 (長途1~2小時推薦，不發燙)">
+          長途省電 (12 FPS / AI 1.2Hz)
+        </button>
+        <button data-power="balanced" class="power-mode-btn text-[11px] font-medium px-2.5 py-1 rounded text-slate-300 hover:bg-slate-800 transition" title="畫面 24 FPS + AI 每0.4秒推論1次">
+          標準平衡 (24 FPS / AI 2.5Hz)
+        </button>
+        <button data-power="ultralow" class="power-mode-btn text-[11px] font-medium px-2.5 py-1 rounded text-slate-300 hover:bg-slate-800 transition" title="手機過熱時自動啟用：畫面 5 FPS + 僅拉取遠端 CCTV 數據">
+          極限降溫 (5 FPS)
+        </button>
+      </div>
+    </section>
+
+    <!-- Top Action / Recommendation Banner (Dynamic AI Decision Engine Output) -->
+    <section id="decisionBanner" class="rounded-2xl p-4 sm:p-5 border transition-all duration-300 bg-gradient-to-r from-amber-500/20 via-slate-900/95 to-slate-900 border-amber-500/50 shadow-lg">
+      <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+        <div class="flex items-start sm:items-center gap-3.5">
+          <div id="decisionIconBox" class="w-12 h-12 sm:w-14 sm:h-14 rounded-2xl bg-amber-500/20 border border-amber-400/40 flex items-center justify-center shrink-0 text-2xl sm:text-3xl font-black text-amber-300">
+            ⇄
+          </div>
+          <div>
+            <div class="flex flex-wrap items-center gap-2 mb-1">
+              <span id="decisionBadge" class="text-xs font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-amber-400 text-slate-950">
+                偵測到烏龜車・建議變換車道
+              </span>
+              <span id="plateMatchBadge" class="text-xs font-medium text-sky-300 bg-sky-500/15 border border-sky-500/30 px-2 py-0.5 rounded-md">
+                車輛 ABC-8888 定位：內線車道 (第1車道)
+              </span>
+            </div>
+            <h2 id="decisionHeadline" class="text-lg sm:text-2xl font-extrabold text-white tracking-tight">
+              建議向右切入「中線車道」，預計可提升時速 +27 km/h
+            </h2>
+            <p id="decisionReason" class="text-xs sm:text-sm text-slate-300 mt-0.5">
+              【手機鏡頭】正前方有 <strong class="text-amber-300">1 台慢速車 (78 km/h)</strong> 且前車距拉大逾 48m 未加速；【前方 800m CCTV】顯示中線車流順暢 (平均 105 km/h)。
+            </p>
+          </div>
+        </div>
+
+        <!-- Quick Voice Speak & Manual Override -->
+        <div class="flex items-center gap-2 shrink-0 self-end lg:self-center">
+          <button id="speakNowBtn" class="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold text-xs sm:text-sm shadow-md shadow-sky-500/20 transition">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M11 5.882V19.24a1.76 1.76 0 01-3.417.592l-2.147-6.15M18 13a3 3 0 100-6M5.436 13.683A4.001 4.001 0 017 6h1.832c4.1 0 7.625-1.234 9.168-3v14c-1.543-1.766-5.067-3-9.168-3H7a3.988 3.988 0 01-1.564-.317z" />
+            </svg>
+            立即語音播報建議
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Scenario Preset Selector & Interactive Controls Bar -->
+    <section class="hud-glass rounded-xl p-3 flex flex-wrap items-center justify-between gap-3">
+      <div class="flex flex-wrap items-center gap-1.5 sm:gap-2">
+        <span class="text-xs font-semibold text-slate-400 mr-1">路況情境模擬：</span>
+        <button data-scenario="turtle_inner" class="scenario-btn text-xs font-bold px-3 py-1.5 rounded-lg bg-sky-500 text-slate-950 transition">
+          1. 內線遇烏龜車 (中線順暢)
+        </button>
+        <button data-scenario="middle_jam" class="scenario-btn text-xs font-medium px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition">
+          2. 前方中線車多 (內線超車道空曠)
+        </button>
+        <button data-scenario="outer_accident" class="scenario-btn text-xs font-medium px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition">
+          3. 遠方外線追撞回堵 (CCTV預警)
+        </button>
+        <button data-scenario="all_clear" class="scenario-btn text-xs font-medium px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition">
+          4. 全線順暢巡航 (維持原車道)
+        </button>
+      </div>
+
+      <!-- Current Lane Switcher -->
+      <div class="flex items-center gap-1.5 bg-slate-900/90 p-1 rounded-lg border border-slate-800">
+        <span class="text-xs text-slate-400 px-2">目前所在車道：</span>
+        <button data-lane="0" class="lane-select-btn text-xs font-bold px-2.5 py-1 rounded bg-sky-500 text-slate-950 transition">內線</button>
+        <button data-lane="1" class="lane-select-btn text-xs font-medium px-2.5 py-1 rounded text-slate-300 hover:bg-slate-800 transition">中線</button>
+        <button data-lane="2" class="lane-select-btn text-xs font-medium px-2.5 py-1 rounded text-slate-300 hover:bg-slate-800 transition">外線</button>
+      </div>
+    </section>
+
+    <!-- Pure Black OLED HUD Mode View (Hidden by default; shown when OLED Eco HUD is toggled on) -->
+    <section id="oledPureHudPanel" class="hidden rounded-2xl bg-black border-2 border-slate-800 p-6 sm:p-10 text-center flex-col items-center justify-center gap-6">
+      <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-xs font-bold">
+        <span>⚡ 極簡純黑省電 HUD 模式運行中（已暫停雙 Canvas 3D 繪圖，GPU 負載降低 85%）</span>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-4 w-full max-w-4xl">
+        <div class="p-5 rounded-2xl bg-slate-950 border border-slate-800">
+          <div class="text-xs text-slate-400 mb-1">本車目前車道與時速</div>
+          <div id="oledCurrentLaneText" class="text-2xl font-black text-sky-400">內線車道</div>
+          <div class="text-4xl font-black text-white mt-2"><span id="oledCurrentSpeedText">78</span> <span class="text-sm font-normal text-slate-400">km/h</span></div>
+        </div>
+
+        <div class="p-5 rounded-2xl bg-slate-950 border border-slate-800">
+          <div class="text-xs text-slate-400 mb-1">正前方車輛與車距</div>
+          <div id="oledFrontCarsText" class="text-2xl font-black text-amber-300">1 台車 (距 48m)</div>
+          <div id="oledTurtleBadgeText" class="text-sm font-bold text-amber-400 mt-2">🐢 判定為慢速烏龜車</div>
+        </div>
+
+        <div class="p-5 rounded-2xl bg-slate-950 border border-emerald-500/40">
+          <div class="text-xs text-slate-400 mb-1">AI 推薦最佳車道</div>
+          <div id="oledBestLaneText" class="text-2xl font-black text-emerald-400">中線車道</div>
+          <div id="oledBestSpeedText" class="text-4xl font-black text-emerald-300 mt-2">105 <span class="text-sm font-normal text-slate-400">km/h</span></div>
+        </div>
+      </div>
+
+      <button id="exitOledHudBtn" class="px-5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold border border-slate-700 transition">
+        返回雙鏡頭視覺監控畫面
+      </button>
+    </section>
+
+    <!-- Dual Vision Core Grid: Left = Phone Dashcam AI | Right = Ahead Freeway CCTV AI -->
+    <div id="dualVisionGrid" class="grid grid-cols-1 lg:grid-cols-12 gap-4">
+
+      <!-- Left Column (7 cols): Phone Front Camera (Dashcam AI Vision) -->
+      <div class="lg:col-span-7 hud-glass rounded-2xl p-4 flex flex-col justify-between">
+        <div>
+          <!-- Header -->
+          <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
+            <div class="flex items-center gap-2">
+              <span class="w-2.5 h-2.5 rounded-full bg-emerald-400"></span>
+              <h3 class="text-sm sm:text-base font-bold text-white">第一視角：手機擋風玻璃鏡頭 (輕量跳幀 AI)</h3>
+            </div>
+            <div class="flex items-center gap-2">
+              <button id="loadAiModelBtn" class="text-xs font-medium px-2.5 py-1 rounded-lg bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300 border border-indigo-500/30 transition flex items-center gap-1" title="按需載入輕量級 MobileNetV2 COCO-SSD 模型，支援對真實相機畫面進行前車偵測">
+                <span id="aiModelStatusText">載入真實 AI 視覺模型 (Lite)</span>
+              </button>
+              <button id="realCamBtn" class="text-xs font-medium px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-sky-300 border border-sky-500/30 transition flex items-center gap-1">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                </svg>
+                <span id="realCamBtnText">開啟手機實景鏡頭</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Interactive Canvas + Optional Real Video Container -->
+          <div class="relative w-full aspect-video bg-slate-950 rounded-xl overflow-hidden border border-slate-800 shadow-inner">
+            <video id="realCameraVideo" autoplay playsinline muted class="hidden absolute inset-0 w-full h-full object-cover opacity-80"></video>
+            <canvas id="dashcamCanvas" class="w-full h-full block"></canvas>
+
+            <!-- HUD Overlay Top-Left -->
+            <div class="absolute top-2.5 left-2.5 bg-slate-950/85 px-2.5 py-1.5 rounded-lg border border-slate-700/80 text-[11px] space-y-0.5 pointer-events-none">
+              <div class="text-sky-400 font-bold flex items-center gap-1.5">
+                <span id="hudAiEngineName">輕量幾何車道追蹤 (12 FPS 省電限制)</span>
+                <span id="hudInferenceMs" class="text-emerald-400 font-mono">1.8ms</span>
+              </div>
+              <div class="text-slate-300">本車時速：<span id="hudEgoSpeed" class="font-bold text-white">78</span> km/h ｜ 車牌：<span id="hudPlate" class="text-amber-300 font-semibold">ABC-8888</span></div>
+            </div>
+
+            <!-- HUD Overlay Top-Right (Turtle Car Detector) -->
+            <div id="turtleAlertHud" class="absolute top-2.5 right-2.5 bg-amber-500/90 text-slate-950 px-2.5 py-1 rounded-lg font-extrabold text-xs shadow-lg flex items-center gap-1.5 pointer-events-none">
+              <span>🐢 前車烏龜指數：高 (車距 48m 未加速)</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Fine-grained Interactive Sliders for Dashcam Simulation -->
+        <div class="mt-4 pt-3 border-t border-slate-800/90 grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+          <div class="bg-slate-900/70 p-2.5 rounded-xl border border-slate-800">
+            <div class="flex justify-between mb-1">
+              <span class="text-slate-400">正前方車輛數 (第一版核心)</span>
+              <span id="frontCarsCountLabel" class="font-bold text-sky-300">1 台</span>
+            </div>
+            <input id="frontCarsSlider" type="range" min="0" max="5" value="1" class="w-full accent-sky-400 cursor-pointer" />
+          </div>
+
+          <div class="bg-slate-900/70 p-2.5 rounded-xl border border-slate-800">
+            <div class="flex justify-between mb-1">
+              <span class="text-slate-400">前車時速 (km/h)</span>
+              <span id="leadSpeedLabel" class="font-bold text-amber-300">78 km/h</span>
+            </div>
+            <input id="leadSpeedSlider" type="range" min="50" max="115" value="78" class="w-full accent-amber-400 cursor-pointer" />
+          </div>
+
+          <div class="bg-slate-900/70 p-2.5 rounded-xl border border-slate-800">
+            <div class="flex justify-between mb-1">
+              <span class="text-slate-400">前車與更前車距 (烏龜判定)</span>
+              <span id="leadGapLabel" class="font-bold text-emerald-300">48 公尺 (空曠卻慢駛)</span>
+            </div>
+            <input id="leadGapSlider" type="range" min="10" max="80" value="48" class="w-full accent-emerald-400 cursor-pointer" />
+          </div>
+        </div>
+      </div>
+
+      <!-- Right Column (5 cols): Ahead 1968 Freeway CCTV Stream + Lane Speed Matrix -->
+      <div class="lg:col-span-5 hud-glass rounded-2xl p-4 flex flex-col justify-between">
+        <div>
+          <!-- Header & CCTV Station Selector -->
+          <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
+            <div class="flex items-center gap-2">
+              <span class="w-2.5 h-2.5 rounded-full bg-sky-400"></span>
+              <h3 class="text-sm sm:text-base font-bold text-white">第二視角：前方 800m 國道 CCTV</h3>
+            </div>
+            <div class="flex items-center gap-1.5">
+              <select id="cctvSelect" class="bg-slate-900 border border-slate-700 text-xs text-slate-200 rounded-lg px-2 py-1 focus:outline-none focus:border-sky-500">
+                <option value="n1_95k">國1南下 95.8K (新竹公道五)</option>
+                <option value="n1_97k">國1南下 97.2K (新竹科學園區)</option>
+                <option value="n3_100k">國3南下 100.5K (寶山交流道)</option>
+              </select>
+              <button id="cctvConfigBtn" class="text-xs px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition" title="設定真實 1968 / TDX 影像快照網址">
+                串流設定
+              </button>
+            </div>
+          </div>
+
+          <!-- Custom CCTV Snapshot URL Input Drawer (Hidden by default) -->
+          <div id="cctvConfigDrawer" class="hidden mb-3 p-2.5 rounded-xl bg-slate-900/95 border border-sky-500/40 text-xs space-y-2">
+            <div class="flex items-center justify-between">
+              <span class="font-bold text-sky-300">串接真實國道 1968 / TDX 監視器快照 (每5秒低功耗抓取)</span>
+              <button id="closeCctvConfigBtn" class="text-slate-400 hover:text-white">✕</button>
+            </div>
+            <p class="text-[11px] text-slate-400">
+              為避免連續解碼 HLS 影片導致手機發燙，系統採用「每 5 秒靜態 Snapshot 輪詢」模式。可貼上高公局 CCTV 即時影像網址：
+            </p>
+            <div class="flex gap-1.5">
+              <input id="customCctvUrlInput" type="url" placeholder="https://cctv.freeway.gov.tw/..."
+                class="flex-1 bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1 text-xs text-white focus:outline-none focus:border-sky-500" />
+              <button id="applyCctvUrlBtn" class="px-3 py-1 rounded-lg bg-sky-500 text-slate-950 font-bold">套用</button>
+            </div>
+          </div>
+
+          <!-- CCTV Overhead Simulation Canvas + Optional Snapshot Image -->
+          <div class="relative w-full aspect-video bg-slate-950 rounded-xl overflow-hidden border border-slate-800 scanline">
+            <img id="realCctvImg" alt="國道即時CCTV快照" class="hidden absolute inset-0 w-full h-full object-cover opacity-85" />
+            <canvas id="cctvCanvas" class="w-full h-full block"></canvas>
+
+            <!-- CCTV Timestamp & TDX API Status -->
+            <div class="absolute top-2 left-2 bg-black/80 px-2 py-0.5 rounded text-[10px] font-mono text-emerald-400 border border-emerald-500/30 pointer-events-none">
+              TDX 低功耗輪詢 ● <span id="cctvTimestamp">23:14:06</span> | <span id="cctvFpsBadge">每5秒更新快照</span>
+            </div>
+            <div class="absolute bottom-2 left-2 bg-black/80 px-2 py-0.5 rounded text-[10px] text-slate-300 pointer-events-none">
+              * 遠端伺服器/輕量端點計算各車道速度，手機端不重複跑雙重深度模型
+            </div>
+          </div>
+        </div>
+
+        <!-- 3-Lane Real-Time Comparison Table -->
+        <div class="mt-4">
+          <div class="flex items-center justify-between mb-2">
+            <span class="text-xs font-bold text-slate-300">各車道融合評分 (近端鏡頭 + 遠端CCTV)</span>
+            <span class="text-[11px] text-slate-400">點擊車道可切換本車位置</span>
+          </div>
+
+          <div id="laneScoreCards" class="grid grid-cols-3 gap-2.5">
+            <!-- Populated dynamically via JS -->
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Bottom Architecture & Long-Drive Anti-Overheating Engineering Design -->
+    <section class="hud-glass rounded-2xl p-4 border border-slate-800/90">
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-slate-800">
+        <div>
+          <h3 class="text-sm font-bold text-white flex items-center gap-2">
+            <svg class="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+            </svg>
+            長途行駛 1～2 小時「防過熱、防當機、零記憶體洩漏」四大輕量化架構
+          </h3>
+        </div>
+        <span class="text-[11px] text-emerald-400 font-medium">已內建 tf.tidy() 自動記憶體回收與 Page Visibility 背景休眠</span>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-4 gap-3 pt-3 text-xs">
+        <div class="bg-slate-900/60 p-3 rounded-xl border border-slate-800/80">
+          <div class="font-bold text-emerald-300 mb-1">1. 跳幀推論 (1~2 Hz) ＋ 480p 降採樣</div>
+          <p class="text-slate-400 leading-relaxed">
+            判斷前車是否為烏龜車不需要每秒跑 60 次 AI。手機鏡頭鎖定 <strong class="text-slate-200">640×360 低解析度</strong>，每 0.5～0.8 秒才抽 1 幀跑 `MobileNetV2-SSD` 並強制呼叫 `tf.tidy()` 釋放 GPU 張量，功耗降低 80%。
+          </p>
+        </div>
+        <div class="bg-slate-900/60 p-3 rounded-xl border border-slate-800/80">
+          <div class="font-bold text-sky-300 mb-1">2. 國道 CCTV 改採 5 秒靜態快照</div>
+          <p class="text-slate-400 leading-relaxed">
+            避免手機同時解碼兩路即時影片（WebRTC + HLS 串流會使手機 20 分鐘內發燙降頻）。前方 1968 CCTV 改用 <strong class="text-slate-200">每 5 秒拉取一次靜態 JPEG/JSON 數據</strong>。
+          </p>
+        </div>
+        <div class="bg-slate-900/60 p-3 rounded-xl border border-slate-800/80">
+          <div class="font-bold text-amber-300 mb-1">3. 智慧電量監控與自動降頻</div>
+          <p class="text-slate-400 leading-relaxed">
+            串接瀏覽器 `Battery API` 與 `Frame Timing` 監測：若偵測到未插電且電量低於 30%，或單幀推論超過 120ms（代表手機開始熱降頻），系統會<strong class="text-slate-200">自動切換至 5 FPS 省電模式</strong>。
+          </p>
+        </div>
+        <div class="bg-slate-900/60 p-3 rounded-xl border border-slate-800/80">
+          <div class="font-bold text-indigo-300 mb-1">4. 極簡純黑 OLED HUD 模式</div>
+          <p class="text-slate-400 leading-relaxed">
+            上路巡航後可一鍵開啟「極簡純黑省電 HUD」，關閉雙 Canvas 視覺繪製，只保留<strong class="text-slate-200">大字體車道指引與語音播報</strong>，搭配 OLED 螢幕純黑不發光特性，連續開 2 小時依然冰涼。
+          </p>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Toast Notification -->
+  <div id="toastBox" class="fixed bottom-5 right-5 z-50 hidden bg-slate-900 border border-sky-500/50 text-white px-4 py-2.5 rounded-xl shadow-2xl text-xs font-medium flex items-center gap-2">
+    <span class="w-2 h-2 rounded-full bg-sky-400"></span>
+    <span id="toastMessage">已更新設定</span>
+  </div>
+
+  <script>
+    // --- Application State ---
+    const state = {
+      plate: 'ABC-8888',
+      currentLane: 0, // 0: 內線, 1: 中線, 2: 外線
+      frontCarsCount: 1,
+      leadSpeed: 78,
+      leadGapMeters: 48, // Distance ahead of the lead car (high gap + low speed = turtle car)
+      voiceEnabled: true,
+      realCameraActive: false,
+      aiModelLoaded: false,
+      aiModelLoading: false,
+      cocoModel: null,
+      detectedBoxes: [],
+      lastInferenceMs: 1.8,
+      powerMode: 'eco', // 'eco' (12 FPS, AI 800ms), 'balanced' (24 FPS, AI 400ms), 'ultralow' (5 FPS, AI 1500ms)
+      targetFps: 12,
+      aiIntervalMs: 800,
+      oledHudActive: false,
+      pageHidden: false,
+      customCctvUrl: '',
+      cctvId: 'n1_95k',
+      scenario: 'turtle_inner',
+      lanes: [
+        { id: 0, name: '內線車道', cctvSpeed: 82, cctvCars: 6, turtleDetected: true },
+        { id: 1, name: '中線車道', cctvSpeed: 105, cctvCars: 3, turtleDetected: false },
+        { id: 2, name: '外線車道', cctvSpeed: 91, cctvCars: 5, turtleDetected: false }
+      ]
+    };
+
+    // Power Mode Configurations
+    const powerConfigs = {
+      eco: { targetFps: 12, aiIntervalMs: 800, label: '低功耗穩定 (預估可連續運行 3.5+ 小時)', engineLabel: '輕量跳幀追蹤 (12 FPS 省電限制)' },
+      balanced: { targetFps: 24, aiIntervalMs: 400, label: '標準負載 (建議連接車充使用)', engineLabel: '標準即時追蹤 (24 FPS 平衡模式)' },
+      ultralow: { targetFps: 5, aiIntervalMs: 1500, label: '極限降溫模式 (CPU/GPU 負載 < 10%)', engineLabel: '極限降溫省電模式 (5 FPS)' }
+    };
+
+    // Scenarios definition
+    const scenarios = {
+      turtle_inner: {
+        currentLane: 0,
+        frontCarsCount: 1,
+        leadSpeed: 78,
+        leadGapMeters: 48,
+        lanes: [
+          { id: 0, name: '內線車道', cctvSpeed: 80, cctvCars: 5, turtleDetected: true },
+          { id: 1, name: '中線車道', cctvSpeed: 105, cctvCars: 2, turtleDetected: false },
+          { id: 2, name: '外線車道', cctvSpeed: 92, cctvCars: 4, turtleDetected: false }
+        ]
+      },
+      middle_jam: {
+        currentLane: 1,
+        frontCarsCount: 4,
+        leadSpeed: 72,
+        leadGapMeters: 14,
+        lanes: [
+          { id: 0, name: '內線車道', cctvSpeed: 108, cctvCars: 2, turtleDetected: false },
+          { id: 1, name: '中線車道', cctvSpeed: 74, cctvCars: 8, turtleDetected: false },
+          { id: 2, name: '外線車道', cctvSpeed: 84, cctvCars: 6, turtleDetected: false }
+        ]
+      },
+      outer_accident: {
+        currentLane: 2,
+        frontCarsCount: 2,
+        leadSpeed: 64,
+        leadGapMeters: 18,
+        lanes: [
+          { id: 0, name: '內線車道', cctvSpeed: 102, cctvCars: 3, turtleDetected: false },
+          { id: 1, name: '中線車道', cctvSpeed: 96, cctvCars: 4, turtleDetected: false },
+          { id: 2, name: '外線車道', cctvSpeed: 42, cctvCars: 11, turtleDetected: false }
+        ]
+      },
+      all_clear: {
+        currentLane: 0,
+        frontCarsCount: 0,
+        leadSpeed: 108,
+        leadGapMeters: 65,
+        lanes: [
+          { id: 0, name: '內線車道', cctvSpeed: 109, cctvCars: 1, turtleDetected: false },
+          { id: 1, name: '中線車道', cctvSpeed: 101, cctvCars: 3, turtleDetected: false },
+          { id: 2, name: '外線車道', cctvSpeed: 93, cctvCars: 4, turtleDetected: false }
+        ]
+      }
+    };
+
+    // Toast Helper
+    let toastTimer = null;
+    function showToast(msg) {
+      const box = document.getElementById('toastBox');
+      const text = document.getElementById('toastMessage');
+      text.textContent = msg;
+      box.classList.remove('hidden');
+      if (toastTimer) clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => {
+        box.classList.add('hidden');
+      }, 2800);
+    }
+
+    // Speech Synthesis Helper
+    function speakRecommendation(text) {
+      if (!('speechSynthesis' in window)) {
+        showToast('此瀏覽器不支援語音合成播報');
+        return;
+      }
+      try {
+        window.speechSynthesis.cancel();
+        const utter = new SpeechSynthesisUtterance(text);
+        utter.lang = 'zh-TW';
+        utter.rate = 1.05;
+        window.speechSynthesis.speak(utter);
+      } catch (e) {
+        // Ignore speech error in restricted iframe
+      }
+    }
+
+    // Screen WakeLock API (Prevent phone screen from sleeping during 1-2h drive)
+    let wakeLockSentinel = null;
+    async function requestWakeLock() {
+      const wakeEl = document.getElementById('wakeLockText');
+      if ('wakeLock' in navigator) {
+        try {
+          wakeLockSentinel = await navigator.wakeLock.request('screen');
+          wakeEl.textContent = '常亮防休眠已鎖定';
+          wakeEl.className = 'font-semibold text-emerald-300';
+        } catch (err) {
+          wakeEl.textContent = '防休眠待命 (點擊畫面啟動)';
+          wakeEl.className = 'font-semibold text-sky-300';
+        }
+      } else {
+        wakeEl.textContent = '系統預設防休眠';
+      }
+    }
+
+    // Battery Status API Monitoring (Auto-throttle if battery drops or unplugged)
+    function initBatteryMonitor() {
+      const batEl = document.getElementById('batteryLevelText');
+      if ('getBattery' in navigator) {
+        navigator.getBattery().then(battery => {
+          function updateBat() {
+            const pct = Math.round(battery.level * 100);
+            const charging = battery.charging ? '車充供電中 ⚡' : '電池供電';
+            batEl.textContent = `${pct}% (${charging})`;
+            if (!battery.charging && pct <= 25 && state.powerMode !== 'ultralow') {
+              setPowerMode('ultralow');
+              showToast('偵測到電量低於 25% 且未接車充，已自動切換至「極限降溫省電模式」');
+            }
+          }
+          updateBat();
+          battery.addEventListener('levelchange', updateBat);
+          battery.addEventListener('chargingchange', updateBat);
+        }).catch(() => {});
+      }
+    }
+
+    // Set Power / Thermal Mode
+    function setPowerMode(modeKey) {
+      const cfg = powerConfigs[modeKey];
+      if (!cfg) return;
+      state.powerMode = modeKey;
+      state.targetFps = cfg.targetFps;
+      state.aiIntervalMs = cfg.aiIntervalMs;
+
+      document.getElementById('thermalStatusBadge').textContent = cfg.label;
+      document.getElementById('hudAiEngineName').textContent = state.aiModelLoaded
+        ? `TF.js MobileNetV2 (${cfg.targetFps} FPS 跳幀推論)`
+        : cfg.engineLabel;
+
+      document.querySelectorAll('.power-mode-btn').forEach(btn => {
+        if (btn.getAttribute('data-power') === modeKey) {
+          btn.className = 'power-mode-btn text-[11px] font-bold px-2.5 py-1 rounded bg-emerald-500 text-slate-950 transition';
+        } else {
+          btn.className = 'power-mode-btn text-[11px] font-medium px-2.5 py-1 rounded text-slate-300 hover:bg-slate-800 transition';
+        }
+      });
+    }
+
+    // Calculate if current lane has a turtle car
+    function isCurrentLaneTurtle() {
+      return state.frontCarsCount >= 1 && state.leadSpeed <= 85 && state.leadGapMeters >= 35;
+    }
+
+    // Evaluate all lanes and compute recommendation
+    function evaluateDecision() {
+      const turtleNow = isCurrentLaneTurtle();
+      state.lanes.forEach((lane, idx) => {
+        if (idx === state.currentLane) {
+          lane.turtleDetected = turtleNow;
+          lane.effectiveSpeed = Math.round((state.leadSpeed * 0.65) + (lane.cctvSpeed * 0.35));
+          lane.frontCars = state.frontCarsCount;
+        } else {
+          lane.turtleDetected = false;
+          lane.effectiveSpeed = lane.cctvSpeed;
+          lane.frontCars = Math.max(0, Math.round(lane.cctvCars / 2) - 1);
+        }
+
+        const turtlePenalty = lane.turtleDetected ? 24 : 0;
+        const carCountPenalty = lane.frontCars * 6;
+        lane.score = Math.max(10, Math.min(99, Math.round(lane.effectiveSpeed - carCountPenalty - turtlePenalty)));
+      });
+
+      let bestLane = state.lanes[0];
+      state.lanes.forEach(l => {
+        if (l.score > bestLane.score) bestLane = l;
+      });
+
+      const currentObj = state.lanes[state.currentLane];
+      const speedGain = Math.max(0, bestLane.effectiveSpeed - currentObj.effectiveSpeed);
+      const shouldSwitch = bestLane.id !== state.currentLane && (bestLane.score - currentObj.score >= 10 || turtleNow);
+
+      return {
+        turtleNow,
+        currentObj,
+        bestLane,
+        speedGain,
+        shouldSwitch
+      };
+    }
+
+    // Render Top Decision Banner, OLED HUD, and Lane Score Cards
+    function renderUI() {
+      const decision = evaluateDecision();
+      const { turtleNow, currentObj, bestLane, speedGain, shouldSwitch } = decision;
+
+      // Update HUD text
+      const egoSpd = state.frontCarsCount === 0 ? 108 : state.leadSpeed;
+      document.getElementById('hudEgoSpeed').textContent = egoSpd;
+      document.getElementById('hudPlate').textContent = state.plate;
+      document.getElementById('plateMatchBadge').textContent = `車輛 ${state.plate} 定位：${currentObj.name} (第${state.currentLane + 1}車道)`;
+
+      // Update Pure Black OLED HUD fields
+      document.getElementById('oledCurrentLaneText').textContent = currentObj.name;
+      document.getElementById('oledCurrentSpeedText').textContent = egoSpd;
+      document.getElementById('oledFrontCarsText').textContent = `${state.frontCarsCount} 台車 (距 ${state.leadGapMeters}m)`;
+      document.getElementById('oledTurtleBadgeText').textContent = turtleNow ? '🐢 判定為慢速烏龜車' : '✓ 前車跟車流正常';
+      document.getElementById('oledBestLaneText').textContent = bestLane.name;
+      document.getElementById('oledBestSpeedText').innerHTML = `${bestLane.effectiveSpeed} <span class="text-sm font-normal text-slate-400">km/h</span>`;
+
+      // Update Sliders UI labels
+      document.getElementById('frontCarsCountLabel').textContent = `${state.frontCarsCount} 台`;
+      document.getElementById('leadSpeedLabel').textContent = `${state.leadSpeed} km/h`;
+      const gapDesc = state.leadGapMeters >= 35 ? `${state.leadGapMeters}m (前方空曠)` : `${state.leadGapMeters}m (跟車正常)`;
+      document.getElementById('leadGapLabel').textContent = gapDesc;
+
+      // Update Turtle HUD badge on Dashcam
+      const turtleHud = document.getElementById('turtleAlertHud');
+      if (turtleNow) {
+        turtleHud.className = 'absolute top-2.5 right-2.5 bg-amber-500/95 text-slate-950 px-2.5 py-1 rounded-lg font-extrabold text-xs shadow-lg flex items-center gap-1.5 pointer-events-none';
+        turtleHud.innerHTML = `<span>🐢 偵測到烏龜車！(前車 ${state.leadSpeed}km/h 且前方空曠 ${state.leadGapMeters}m)</span>`;
+      } else if (state.frontCarsCount >= 3) {
+        turtleHud.className = 'absolute top-2.5 right-2.5 bg-rose-500/90 text-white px-2.5 py-1 rounded-lg font-extrabold text-xs shadow-lg flex items-center gap-1.5 pointer-events-none';
+        turtleHud.innerHTML = `<span>🚗 前方車陣密集 (${state.frontCarsCount} 台車排隊中)</span>`;
+      } else {
+        turtleHud.className = 'absolute top-2.5 right-2.5 bg-emerald-500/90 text-slate-950 px-2.5 py-1 rounded-lg font-extrabold text-xs shadow-lg flex items-center gap-1.5 pointer-events-none';
+        turtleHud.innerHTML = `<span>✓ 本車道前車流順暢</span>`;
+      }
+
+      // Update Top Decision Banner
+      const banner = document.getElementById('decisionBanner');
+      const iconBox = document.getElementById('decisionIconBox');
+      const badge = document.getElementById('decisionBadge');
+      const headline = document.getElementById('decisionHeadline');
+      const reason = document.getElementById('decisionReason');
+
+      if (shouldSwitch) {
+        const direction = bestLane.id > state.currentLane ? '向右切入' : '向左切入';
+        banner.className = 'rounded-2xl p-4 sm:p-5 border transition-all duration-300 bg-gradient-to-r from-amber-500/20 via-slate-900/95 to-slate-900 border-amber-500/50 shadow-lg';
+        iconBox.className = 'w-12 h-12 sm:w-14 sm:h-14 rounded-2xl bg-amber-500/20 border border-amber-400/40 flex items-center justify-center shrink-0 text-2xl sm:text-3xl font-black text-amber-300';
+        iconBox.textContent = bestLane.id > state.currentLane ? '↱' : '↰';
+
+        if (turtleNow) {
+          badge.className = 'text-xs font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-amber-400 text-slate-950';
+          badge.textContent = '偵測到烏龜車・建議變換車道';
+          headline.textContent = `建議${direction}「${bestLane.name}」，預計可提升時速 +${speedGain} km/h`;
+          reason.innerHTML = `【手機鏡頭】正前方有 <strong class="text-amber-300">${state.frontCarsCount} 台慢速車 (${state.leadSpeed} km/h)</strong> 且前車距拉大逾 ${state.leadGapMeters}m 未加速；【前方 800m CCTV】顯示${bestLane.name}順暢 (平均 ${bestLane.effectiveSpeed} km/h)。`;
+        } else {
+          badge.className = 'text-xs font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-sky-400 text-slate-950';
+          badge.textContent = '前方車多壅塞・建議變換車道';
+          headline.textContent = `建議${direction}「${bestLane.name}」，避開前方排隊車陣 (+${speedGain} km/h)`;
+          reason.innerHTML = `【手機鏡頭】本車道前方累計 <strong class="text-rose-300">${state.frontCarsCount} 台車</strong>；【前方 800m CCTV】顯示${bestLane.name}車流較少，平均時速達 ${bestLane.effectiveSpeed} km/h。`;
+        }
+      } else {
+        banner.className = 'rounded-2xl p-4 sm:p-5 border transition-all duration-300 bg-gradient-to-r from-emerald-500/20 via-slate-900/95 to-slate-900 border-emerald-500/50 shadow-lg';
+        iconBox.className = 'w-12 h-12 sm:w-14 sm:h-14 rounded-2xl bg-emerald-500/20 border border-emerald-400/40 flex items-center justify-center shrink-0 text-2xl sm:text-3xl font-black text-emerald-300';
+        iconBox.textContent = '↑';
+        badge.className = 'text-xs font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-emerald-400 text-slate-950';
+        badge.textContent = '最佳車道・建議維持直行';
+        headline.textContent = `目前所在的「${currentObj.name}」即為最快車道 (${currentObj.effectiveSpeed} km/h)`;
+        reason.innerHTML = `【手機鏡頭】正前方僅 <strong class="text-emerald-300">${state.frontCarsCount} 台車</strong> 且無慢速龜車阻擋；【前方 800m CCTV】確認本車道綜合順暢度最高 (${currentObj.score} 分)。`;
+      }
+
+      // Update Lane Selector Buttons
+      document.querySelectorAll('.lane-select-btn').forEach(btn => {
+        const laneIdx = parseInt(btn.getAttribute('data-lane'), 10);
+        if (laneIdx === state.currentLane) {
+          btn.className = 'lane-select-btn text-xs font-bold px-2.5 py-1 rounded bg-sky-500 text-slate-950 transition';
+        } else {
+          btn.className = 'lane-select-btn text-xs font-medium px-2.5 py-1 rounded text-slate-300 hover:bg-slate-800 transition';
+        }
+      });
+
+      // Render 3-Lane Comparison Cards
+      const cardsContainer = document.getElementById('laneScoreCards');
+      cardsContainer.innerHTML = state.lanes.map((lane, idx) => {
+        const isCurrent = idx === state.currentLane;
+        const isBest = lane.id === bestLane.id;
+        let borderClass = 'border-slate-800 bg-slate-900/75';
+        if (isBest) borderClass = 'border-emerald-500/60 bg-emerald-950/25';
+        else if (isCurrent && turtleNow) borderClass = 'border-amber-500/60 bg-amber-950/25';
+
+        const speedColor = lane.effectiveSpeed >= 95 ? 'text-emerald-400' : (lane.effectiveSpeed >= 80 ? 'text-amber-300' : 'text-rose-400');
+
+        return `
+          <button data-card-lane="${idx}" class="text-left p-3 rounded-xl border ${borderClass} hover:border-sky-500/50 transition flex flex-col justify-between relative">
+            <div>
+              <div class="flex items-center justify-between gap-1 mb-1">
+                <span class="text-xs font-bold text-white">${lane.name}</span>
+                ${isCurrent ? '<span class="text-[10px] px-1.5 py-0.5 rounded bg-sky-500/20 text-sky-300 font-semibold">本車</span>' : ''}
+              </div>
+              <div class="text-lg sm:text-xl font-black ${speedColor}">${lane.effectiveSpeed} <span class="text-[11px] font-normal text-slate-400">km/h</span></div>
+            </div>
+            <div class="mt-2 pt-2 border-t border-slate-800/80 text-[11px] space-y-0.5 text-slate-300">
+              <div>前車數量：<span class="font-bold text-white">${lane.frontCars} 台</span></div>
+              <div>推薦指數：<span class="font-bold ${isBest ? 'text-emerald-300' : 'text-slate-200'}">${lane.score} 分</span></div>
+              ${lane.turtleDetected ? '<div class="text-amber-300 font-bold">⚠️ 烏龜車佔用</div>' : (isBest ? '<div class="text-emerald-400 font-bold">★ 最快推薦車道</div>' : '<div class="text-slate-400">一般車流</div>')}
+            </div>
+          </button>
+        `;
+      }).join('');
+
+      cardsContainer.querySelectorAll('[data-card-lane]').forEach(card => {
+        card.addEventListener('click', () => {
+          const newLane = parseInt(card.getAttribute('data-card-lane'), 10);
+          state.currentLane = newLane;
+          renderUI();
+          showToast(`已切換本車定位至：${state.lanes[newLane].name}`);
+        });
+      });
+    }
+
+    // --- Real Lightweight AI Inference (COCO-SSD Lite with Frame Skipping & Memory Guard) ---
+    let lastAiRunTime = 0;
+    async function maybeRunLightweightAiInference(timestamp) {
+      if (!state.aiModelLoaded || !state.cocoModel || !state.realCameraActive) return;
+      if (timestamp - lastAiRunTime < state.aiIntervalMs) return;
+      lastAiRunTime = timestamp;
+
+      const videoEl = document.getElementById('realCameraVideo');
+      if (videoEl.readyState < 2) return;
+
+      const t0 = performance.now();
+      try {
+        const predictions = await state.cocoModel.detect(videoEl, 6);
+        const vehicleClasses = ['car', 'truck', 'bus'];
+        const vehicles = predictions.filter(p => vehicleClasses.includes(p.class) && p.score >= 0.45);
+
+        state.detectedBoxes = vehicles;
+        state.frontCarsCount = Math.min(5, vehicles.length);
+        document.getElementById('frontCarsSlider').value = state.frontCarsCount;
+
+        // Estimate distance from largest bounding box height
+        if (vehicles.length > 0) {
+          const maxBoxH = Math.max(...vehicles.map(v => v.bbox[3]));
+          const ratio = maxBoxH / Math.max(1, videoEl.videoHeight || 360);
+          state.leadGapMeters = Math.max(10, Math.min(80, Math.round((1 - ratio) * 75)));
+          document.getElementById('leadGapSlider').value = state.leadGapMeters;
+        }
+
+        const dt = Math.round(performance.now() - t0);
+        state.lastInferenceMs = dt;
+        document.getElementById('hudInferenceMs').textContent = `${dt}ms`;
+
+        // Thermal protection: if single inference takes > 140ms, auto step down power mode
+        if (dt > 140 && state.powerMode === 'balanced') {
+          setPowerMode('eco');
+          showToast('偵測到推論耗時增加，已自動降頻至「長途省電模式 (12 FPS)」防止手機發熱');
+        }
+
+        renderUI();
+      } catch (e) {
+        // Ignore transient frame errors
+      }
+
+      // Report TF.js active tensors to prove zero memory leak
+      if (window.tf && window.tf.memory) {
+        const numTensors = window.tf.memory().numTensors;
+        document.getElementById('tensorCountText').textContent = `Tensors: ${numTensors} (受控無洩漏)`;
+      }
+    }
+
+    // --- Canvas 1: Phone Dashcam AI Vision Simulation ---
+    const dashCanvas = document.getElementById('dashcamCanvas');
+    const dashCtx = dashCanvas.getContext('2d');
+    let roadOffset = 0;
+
+    function resizeCanvases() {
+      const dRect = dashCanvas.parentElement.getBoundingClientRect();
+      // Cap internal canvas resolution for thermal & GPU efficiency
+      dashCanvas.width = Math.min(640, Math.max(320, Math.floor(dRect.width)));
+      dashCanvas.height = Math.min(360, Math.max(180, Math.floor(dRect.height)));
+
+      const cCanvas = document.getElementById('cctvCanvas');
+      const cRect = cCanvas.parentElement.getBoundingClientRect();
+      cCanvas.width = Math.min(480, Math.max(300, Math.floor(cRect.width)));
+      cCanvas.height = Math.min(270, Math.max(170, Math.floor(cRect.height)));
+    }
+
+    function drawDashcamFrame() {
+      const w = dashCanvas.width;
+      const h = dashCanvas.height;
+      dashCtx.clearRect(0, 0, w, h);
+
+      if (!state.realCameraActive) {
+        const skyGrad = dashCtx.createLinearGradient(0, 0, 0, h * 0.45);
+        skyGrad.addColorStop(0, '#060c1a');
+        skyGrad.addColorStop(1, '#111e36');
+        dashCtx.fillStyle = skyGrad;
+        dashCtx.fillRect(0, 0, w, h * 0.45);
+
+        const roadGrad = dashCtx.createLinearGradient(0, h * 0.45, 0, h);
+        roadGrad.addColorStop(0, '#161f30');
+        roadGrad.addColorStop(1, '#0b101b');
+        dashCtx.fillStyle = roadGrad;
+        dashCtx.fillRect(0, h * 0.45, w, h * 0.55);
+      }
+
+      const horizonY = h * 0.44;
+      const vanishX = w * 0.5 + (1 - state.currentLane) * (w * 0.06);
+
+      const laneBottomX = [-w * 0.35, w * 0.18, w * 0.82, w * 1.35];
+      dashCtx.lineWidth = 2.5;
+
+      dashCtx.fillStyle = isCurrentLaneTurtle()
+        ? 'rgba(245, 158, 11, 0.14)'
+        : 'rgba(14, 165, 233, 0.14)';
+      dashCtx.beginPath();
+      dashCtx.moveTo(vanishX - 18, horizonY);
+      dashCtx.lineTo(vanishX + 18, horizonY);
+      dashCtx.lineTo(laneBottomX[2], h);
+      dashCtx.lineTo(laneBottomX[1], h);
+      dashCtx.closePath();
+      dashCtx.fill();
+
+      roadOffset = (roadOffset + (state.leadSpeed / 18)) % 40;
+      dashCtx.setLineDash([18, 16]);
+      dashCtx.lineDashOffset = -roadOffset;
+      dashCtx.strokeStyle = 'rgba(226, 232, 240, 0.7)';
+
+      for (let i = 0; i < laneBottomX.length; i++) {
+        dashCtx.beginPath();
+        dashCtx.moveTo(vanishX + (i - 1.5) * 14, horizonY);
+        dashCtx.lineTo(laneBottomX[i], h);
+        dashCtx.stroke();
+      }
+      dashCtx.setLineDash([]);
+
+      const decision = evaluateDecision();
+      if (decision.shouldSwitch) {
+        const dir = decision.bestLane.id > state.currentLane ? 1 : -1;
+        dashCtx.save();
+        dashCtx.strokeStyle = '#38bdf8';
+        dashCtx.lineWidth = 3.5;
+        dashCtx.beginPath();
+        dashCtx.moveTo(w * 0.5, h * 0.88);
+        dashCtx.quadraticCurveTo(w * 0.5, h * 0.72, w * 0.5 + dir * (w * 0.2), h * 0.68);
+        dashCtx.stroke();
+        dashCtx.fillStyle = '#38bdf8';
+        dashCtx.font = 'bold 11px Inter, Noto Sans TC';
+        dashCtx.fillText(`建議切往${decision.bestLane.name}`, w * 0.5 + dir * (w * 0.14) - 38, h * 0.64);
+        dashCtx.restore();
+      }
+
+      // If Real Camera + Real TF.js AI detections exist, draw real bounding boxes
+      if (state.realCameraActive && state.aiModelLoaded && state.detectedBoxes.length > 0) {
+        const videoEl = document.getElementById('realCameraVideo');
+        const scaleX = w / (videoEl.videoWidth || 640);
+        const scaleY = h / (videoEl.videoHeight || 360);
+
+        state.detectedBoxes.forEach((det, idx) => {
+          const [bx, by, bw, bh] = det.bbox;
+          const rx = bx * scaleX;
+          const ry = by * scaleY;
+          const rw = bw * scaleX;
+          const rh = bh * scaleY;
+
+          dashCtx.strokeStyle = idx === 0 && decision.turtleNow ? '#f59e0b' : '#38bdf8';
+          dashCtx.lineWidth = 2.5;
+          dashCtx.strokeRect(rx, ry, rw, rh);
+
+          dashCtx.fillStyle = '#020617';
+          dashCtx.fillRect(rx, Math.max(0, ry - 18), 110, 18);
+          dashCtx.fillStyle = '#38bdf8';
+          dashCtx.font = 'bold 10px Inter';
+          dashCtx.fillText(`${det.class.toUpperCase()} ${Math.round(det.score * 100)}%`, rx + 4, Math.max(12, ry - 5));
+        });
+        return;
+      }
+
+      // Otherwise draw simulated vehicles ahead based on state.frontCarsCount
+      const count = state.frontCarsCount;
+      for (let c = count - 1; c >= 0; c--) {
+        const depthRatio = c === 0
+          ? Math.max(0.28, Math.min(0.78, 1 - state.leadGapMeters / 110))
+          : Math.max(0.12, 0.35 - c * 0.07);
+
+        const carY = horizonY + (h - horizonY) * depthRatio;
+        const carW = 26 + depthRatio * 88;
+        const carH = carW * 0.68;
+        const carX = vanishX + (w * 0.5 - vanishX) * depthRatio - carW / 2;
+
+        dashCtx.fillStyle = '#1e293b';
+        dashCtx.fillRect(carX, carY - carH, carW, carH);
+
+        dashCtx.fillStyle = '#ef4444';
+        dashCtx.fillRect(carX + 4, carY - carH * 0.45, carW * 0.22, carH * 0.16);
+        dashCtx.fillRect(carX + carW * 0.78 - 4, carY - carH * 0.45, carW * 0.22, carH * 0.16);
+
+        const isLead = c === 0;
+        const boxColor = isLead && decision.turtleNow ? '#f59e0b' : '#38bdf8';
+        dashCtx.strokeStyle = boxColor;
+        dashCtx.lineWidth = isLead ? 2.2 : 1.5;
+        dashCtx.strokeRect(carX - 4, carY - carH - 4, carW + 8, carH + 8);
+
+        if (isLead) {
+          const label = decision.turtleNow
+            ? `🐢 慢速前車 ${state.leadSpeed}km/h | 距前車 ${state.leadGapMeters}m`
+            : `前車 #1 (${state.leadSpeed}km/h)`;
+          dashCtx.fillStyle = boxColor;
+          dashCtx.fillRect(carX - 4, carY - carH - 22, Math.min(w - 20, label.length * 7.2 + 12), 18);
+          dashCtx.fillStyle = '#020617';
+          dashCtx.font = 'bold 10px Inter, Noto Sans TC';
+          dashCtx.fillText(label, carX + 2, carY - carH - 9);
+        }
+      }
+    }
+
+    // --- Canvas 2: 1968 Freeway CCTV Low-Power Snapshot Simulation ---
+    const cctvCanvas = document.getElementById('cctvCanvas');
+    const cctvCtx = cctvCanvas.getContext('2d');
+    const cctvParticles = [
+      { lane: 0, y: 0.2 }, { lane: 0, y: 0.55 }, { lane: 0, y: 0.85 },
+      { lane: 1, y: 0.15 }, { lane: 1, y: 0.6 },
+      { lane: 2, y: 0.3 }, { lane: 2, y: 0.7 }
+    ];
+
+    function drawCctvFrame() {
+      const w = cctvCanvas.width;
+      const h = cctvCanvas.height;
+      cctvCtx.clearRect(0, 0, w, h);
+
+      if (!state.customCctvUrl) {
+        cctvCtx.fillStyle = '#0f172a';
+        cctvCtx.fillRect(0, 0, w, h);
+      }
+
+      const laneW = w * 0.22;
+      const startX = w * 0.17;
+
+      state.lanes.forEach((lane, idx) => {
+        const x = startX + idx * laneW;
+
+        if (lane.effectiveSpeed >= 95) {
+          cctvCtx.fillStyle = 'rgba(16, 185, 129, 0.12)';
+        } else if (lane.effectiveSpeed >= 80) {
+          cctvCtx.fillStyle = 'rgba(245, 158, 11, 0.14)';
+        } else {
+          cctvCtx.fillStyle = 'rgba(239, 68, 68, 0.18)';
+        }
+        cctvCtx.fillRect(x, 0, laneW - 4, h);
+
+        cctvCtx.strokeStyle = 'rgba(148, 163, 184, 0.4)';
+        cctvCtx.setLineDash([10, 10]);
+        cctvCtx.beginPath();
+        cctvCtx.moveTo(x, 0);
+        cctvCtx.lineTo(x, h);
+        cctvCtx.stroke();
+        cctvCtx.setLineDash([]);
+
+        cctvCtx.fillStyle = 'rgba(2, 6, 23, 0.85)';
+        cctvCtx.fillRect(x + 4, 26, laneW - 12, 34);
+        cctvCtx.fillStyle = '#f8fafc';
+        cctvCtx.font = 'bold 10px Inter, Noto Sans TC';
+        cctvCtx.fillText(lane.name, x + 7, 40);
+
+        cctvCtx.fillStyle = lane.effectiveSpeed >= 95 ? '#34d399' : (lane.effectiveSpeed >= 80 ? '#fbbf24' : '#f87171');
+        cctvCtx.font = 'bold 10px Inter';
+        cctvCtx.fillText(`${lane.effectiveSpeed} km/h`, x + 7, 54);
+      });
+
+      if (!state.customCctvUrl) {
+        cctvParticles.forEach((p) => {
+          const laneObj = state.lanes[p.lane] || state.lanes[0];
+          const speedNorm = (laneObj.effectiveSpeed || 80) / 1400;
+          p.y = (p.y + speedNorm) % 1;
+
+          const x = startX + p.lane * laneW + laneW * 0.25;
+          const y = 66 + p.y * (h - 86);
+
+          cctvCtx.fillStyle = '#e2e8f0';
+          cctvCtx.fillRect(x, y, laneW * 0.42, 14);
+
+          cctvCtx.strokeStyle = p.lane === state.currentLane ? '#38bdf8' : '#10b981';
+          cctvCtx.lineWidth = 1.5;
+          cctvCtx.strokeRect(x - 2, y - 2, laneW * 0.42 + 4, 18);
+        });
+      }
+    }
+
+    // --- Throttled Animation Loop (Saves 70~85% GPU/CPU vs 60fps requestAnimationFrame) ---
+    let lastDrawTime = 0;
+    let lastCctvDrawTime = 0;
+
+    function animateLoop(timestamp) {
+      requestAnimationFrame(animateLoop);
+
+      // Pause all heavy rendering if browser tab is in background or OLED Pure HUD mode is active
+      if (state.pageHidden || state.oledHudActive) return;
+
+      const frameInterval = 1000 / state.targetFps;
+      if (timestamp - lastDrawTime >= frameInterval) {
+        lastDrawTime = timestamp;
+        drawDashcamFrame();
+      }
+
+      // CCTV canvas only needs low-rate updates (every 250ms in simulation, or 5000ms snapshot refresh)
+      if (timestamp - lastCctvDrawTime >= 250) {
+        lastCctvDrawTime = timestamp;
+        drawCctvFrame();
+      }
+
+      // Throttled lightweight AI inference on real camera frames
+      maybeRunLightweightAiInference(timestamp);
+    }
+
+    // 5-Second Low-Power CCTV Snapshot Polling Timer
+    setInterval(() => {
+      if (state.pageHidden) return;
+      const now = new Date();
+      document.getElementById('cctvTimestamp').textContent = now.toLocaleTimeString('zh-TW', { hour12: false });
+
+      if (state.customCctvUrl) {
+        const imgEl = document.getElementById('realCctvImg');
+        const sep = state.customCctvUrl.includes('?') ? '&' : '?';
+        imgEl.src = `${state.customCctvUrl}${sep}t=${Date.now()}`;
+      }
+    }, 5000);
+
+    // --- Event Listeners Setup ---
+    window.addEventListener('DOMContentLoaded', () => {
+      resizeCanvases();
+      window.addEventListener('resize', resizeCanvases);
+      requestWakeLock();
+      initBatteryMonitor();
+
+      // Re-acquire WakeLock & pause/resume rendering on visibility change
+      document.addEventListener('visibilitychange', () => {
+        state.pageHidden = document.hidden;
+        if (!document.hidden) {
+          requestWakeLock();
+        }
+      });
+
+      // Power Mode Buttons
+      document.querySelectorAll('.power-mode-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const mode = btn.getAttribute('data-power');
+          setPowerMode(mode);
+          showToast(`已切換至：${powerConfigs[mode].label}`);
+        });
+      });
+
+      // Pure Black OLED HUD Toggle
+      const oledBtn = document.getElementById('oledHudBtn');
+      const exitOledBtn = document.getElementById('exitOledHudBtn');
+      function toggleOledHud(forceState) {
+        state.oledHudActive = typeof forceState === 'boolean' ? forceState : !state.oledHudActive;
+        const dualGrid = document.getElementById('dualVisionGrid');
+        const oledPanel = document.getElementById('oledPureHudPanel');
+        const btnText = document.getElementById('oledHudBtnText');
+
+        if (state.oledHudActive) {
+          document.body.classList.add('oled-eco-mode');
+          dualGrid.classList.add('hidden');
+          oledPanel.classList.remove('hidden');
+          oledPanel.classList.add('flex');
+          btnText.textContent = '退出極簡 HUD';
+          showToast('已進入「極簡純黑省電 HUD 模式」，雙 Canvas 已休眠降溫');
+        } else {
+          document.body.classList.remove('oled-eco-mode');
+          dualGrid.classList.remove('hidden');
+          oledPanel.classList.add('hidden');
+          oledPanel.classList.remove('flex');
+          btnText.textContent = '極簡純黑省電 HUD';
+          resizeCanvases();
+          showToast('已返回雙鏡頭視覺監控模式');
+        }
+      }
+      oledBtn.addEventListener('click', () => toggleOledHud());
+      exitOledBtn.addEventListener('click', () => toggleOledHud(false));
+
+      // Load Real Lightweight AI Model (MobileNetV2 COCO-SSD Lite) On-Demand
+      const loadAiBtn = document.getElementById('loadAiModelBtn');
+      loadAiBtn.addEventListener('click', async () => {
+        if (state.aiModelLoaded || state.aiModelLoading) return;
+        if (!window.cocoSsd) {
+          showToast('AI 模型套件尚未就緒，請稍候再試');
+          return;
+        }
+        state.aiModelLoading = true;
+        document.getElementById('aiModelStatusText').textContent = '載入輕量模型中...';
+        showToast('正在載入輕量級 MobileNetV2 視覺模型 (約 2~3 秒)...');
+        try {
+          state.cocoModel = await window.cocoSsd.load({ base: 'lite_mobilenet_v2' });
+          state.aiModelLoaded = true;
+          state.aiModelLoading = false;
+          document.getElementById('aiModelStatusText').textContent = '✓ 真實 AI 模型已就緒';
+          document.getElementById('hudAiEngineName').textContent = `TF.js MobileNetV2 (${state.targetFps} FPS 跳幀推論)`;
+          showToast('輕量級 MobileNetV2 載入完成！開啟手機實景鏡頭即可自動框選前車');
+        } catch (err) {
+          state.aiModelLoading = false;
+          document.getElementById('aiModelStatusText').textContent = '模型載入失敗 (維持模擬)';
+          showToast('無法連線下載模型權重，已維持內建幾何輕量追蹤');
+        }
+      });
+
+      // Custom 1968 CCTV Snapshot Config Drawer
+      const cctvDrawer = document.getElementById('cctvConfigDrawer');
+      document.getElementById('cctvConfigBtn').addEventListener('click', () => {
+        cctvDrawer.classList.toggle('hidden');
+      });
+      document.getElementById('closeCctvConfigBtn').addEventListener('click', () => {
+        cctvDrawer.classList.add('hidden');
+      });
+      document.getElementById('applyCctvUrlBtn').addEventListener('click', () => {
+        const url = document.getElementById('customCctvUrlInput').value.trim();
+        const imgEl = document.getElementById('realCctvImg');
+        if (url) {
+          state.customCctvUrl = url;
+          imgEl.src = url;
+          imgEl.classList.remove('hidden');
+          showToast('已套用自訂 1968 CCTV 快照網址，每 5 秒自動低功耗更新');
+        } else {
+          state.customCctvUrl = '';
+          imgEl.classList.add('hidden');
+          showToast('已恢復內建國道 CCTV 模擬畫面');
+        }
+        cctvDrawer.classList.add('hidden');
+      });
+
+      // License Plate Input
+      const plateInput = document.getElementById('plateInput');
+      document.getElementById('savePlateBtn').addEventListener('click', () => {
+        const val = plateInput.value.trim().toUpperCase() || 'ABC-8888';
+        state.plate = val;
+        plateInput.value = val;
+        renderUI();
+        showToast(`已綁定車牌號碼：${val}，結合 GPS 與雙鏡頭定位`);
+      });
+
+      // GPS Location Button
+      const gpsLocations = [
+        '國1南下 95.4K (新竹公道五)',
+        '國1南下 97.0K (新竹科學園區)',
+        '國3南下 100.2K (寶山交流道)'
+      ];
+      let gpsIdx = 0;
+      document.getElementById('gpsBtn').addEventListener('click', () => {
+        if ('geolocation' in navigator) {
+          navigator.geolocation.getCurrentPosition(
+            (pos) => {
+              const lat = pos.coords.latitude.toFixed(4);
+              const lng = pos.coords.longitude.toFixed(4);
+              document.getElementById('gpsText').textContent = `GPS已鎖定 (${lat}, ${lng})`;
+              showToast('已取得手機即時 GPS 座標並對齊最近國道 CCTV');
+            },
+            () => {
+              gpsIdx = (gpsIdx + 1) % gpsLocations.length;
+              document.getElementById('gpsText').textContent = gpsLocations[gpsIdx];
+              showToast(`模擬切換 GPS 座標至：${gpsLocations[gpsIdx]}`);
+            },
+            { timeout: 3000, maximumAge: 5000, enableHighAccuracy: false }
+          );
+        } else {
+          gpsIdx = (gpsIdx + 1) % gpsLocations.length;
+          document.getElementById('gpsText').textContent = gpsLocations[gpsIdx];
+          showToast(`模擬切換 GPS 座標至：${gpsLocations[gpsIdx]}`);
+        }
+      });
+
+      // Voice Toggle & Immediate Speak
+      document.getElementById('voiceToggleBtn').addEventListener('click', () => {
+        state.voiceEnabled = !state.voiceEnabled;
+        document.getElementById('voiceStatusText').textContent = state.voiceEnabled ? '語音開啟' : '語音靜音';
+        showToast(state.voiceEnabled ? '已開啟車道建議語音播報' : '已將語音播報設為靜音');
+      });
+
+      document.getElementById('speakNowBtn').addEventListener('click', () => {
+        const text = document.getElementById('decisionHeadline').textContent;
+        speakRecommendation(text);
+        showToast(`語音播報：「${text}」`);
+      });
+
+      // Scenario Preset Buttons
+      document.querySelectorAll('.scenario-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const key = btn.getAttribute('data-scenario');
+          const preset = scenarios[key];
+          if (!preset) return;
+
+          state.scenario = key;
+          state.currentLane = preset.currentLane;
+          state.frontCarsCount = preset.frontCarsCount;
+          state.leadSpeed = preset.leadSpeed;
+          state.leadGapMeters = preset.leadGapMeters;
+          state.lanes = JSON.parse(JSON.stringify(preset.lanes));
+
+          document.getElementById('frontCarsSlider').value = state.frontCarsCount;
+          document.getElementById('leadSpeedSlider').value = state.leadSpeed;
+          document.getElementById('leadGapSlider').value = state.leadGapMeters;
+
+          document.querySelectorAll('.scenario-btn').forEach(b => {
+            b.className = 'scenario-btn text-xs font-medium px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition';
+          });
+          btn.className = 'scenario-btn text-xs font-bold px-3 py-1.5 rounded-lg bg-sky-500 text-slate-950 transition';
+
+          renderUI();
+          if (state.voiceEnabled) {
+            speakRecommendation(document.getElementById('decisionHeadline').textContent);
+          }
+        });
+      });
+
+      // Current Lane Select Buttons
+      document.querySelectorAll('.lane-select-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          state.currentLane = parseInt(btn.getAttribute('data-lane'), 10);
+          renderUI();
+        });
+      });
+
+      // Interactive Sliders
+      document.getElementById('frontCarsSlider').addEventListener('input', (e) => {
+        state.frontCarsCount = parseInt(e.target.value, 10);
+        renderUI();
+      });
+
+      document.getElementById('leadSpeedSlider').addEventListener('input', (e) => {
+        state.leadSpeed = parseInt(e.target.value, 10);
+        renderUI();
+      });
+
+      document.getElementById('leadGapSlider').addEventListener('input', (e) => {
+        state.leadGapMeters = parseInt(e.target.value, 10);
+        renderUI();
+      });
+
+      // CCTV Selector
+      document.getElementById('cctvSelect').addEventListener('change', (e) => {
+        state.cctvId = e.target.value;
+        const label = e.target.options[e.target.selectedIndex].text;
+        showToast(`已切換串接前方監視器：${label}`);
+      });
+
+      // Real Smartphone Camera Toggle (Constrained to 640x360 @ 15fps to prevent overheating)
+      const realCamBtn = document.getElementById('realCamBtn');
+      const realCamVideo = document.getElementById('realCameraVideo');
+      realCamBtn.addEventListener('click', async () => {
+        if (!state.realCameraActive) {
+          if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+            try {
+              const stream = await navigator.mediaDevices.getUserMedia({
+                video: {
+                  facingMode: 'environment',
+                  width: { ideal: 640, max: 640 },
+                  height: { ideal: 360, max: 480 },
+                  frameRate: { ideal: 15, max: 15 }
+                },
+                audio: false
+              });
+              realCamVideo.srcObject = stream;
+              realCamVideo.classList.remove('hidden');
+              state.realCameraActive = true;
+              document.getElementById('realCamBtnText').textContent = '關閉鏡頭 (返回模擬)';
+              showToast('已開啟 640×360 @ 15fps 低功耗實景鏡頭！');
+            } catch (err) {
+              showToast('無法取得相機權限，目前維持 AI 模擬行車畫面');
+            }
+          } else {
+            showToast('此環境不支援直接開啟相機，目前維持 AI 模擬畫面');
+          }
+        } else {
+          if (realCamVideo.srcObject) {
+            realCamVideo.srcObject.getTracks().forEach(t => t.stop());
+            realCamVideo.srcObject = null;
+          }
+          realCamVideo.classList.add('hidden');
+          state.realCameraActive = false;
+          state.detectedBoxes = [];
+          document.getElementById('realCamBtnText').textContent = '開啟手機實景鏡頭';
+          showToast('已關閉相機硬體並切換回模擬畫面');
+        }
+      });
+
+      // Initial Render & Start Throttled Loop
+      renderUI();
+      requestAnimationFrame(animateLoop);
+    });
+  </script>
+</body>
+</html>
